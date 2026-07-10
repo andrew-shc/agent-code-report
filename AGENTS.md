@@ -127,13 +127,6 @@ distilling a 100-message conversation into a few pages of architecture
 decisions, bugs, measurements, and rationale, with concrete file/line
 references and images/tables/listings where they help.
 
-### Markdown (non-LaTeX)
-
-- Use standard GitHub-flavored Markdown.
-- Tables should be pipe-delimited with alignment markers.
-- Code blocks should specify the language for syntax highlighting.
-- Keep line length under 100 characters for readability.
-
 ## Git & commit workflow
 
 Unlike the parent `metrology_ir` repo (which has a strict "no auto-commit"
