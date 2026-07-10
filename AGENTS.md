@@ -89,12 +89,59 @@ reflect the current document set.
 - Use the `float` option so the listing can drift to a convenient
   page in the PDF.
 
+### Report writing style
+
+- Concise but detailed. Each paragraph should earn its place.
+- No abstract, no acknowledgments — just the substance.
+- Code snippets are welcome and encouraged. Listing the full
+  `torch.autograd.Function` class or the key rendering loop helps
+  the reader verify the architecture. Keep them focused (one class
+  or function per listing).
+- Describe what you actually found, not what you expected. Bugs,
+  dead ends, and surprising results are more valuable than clean
+  narratives.
+- Prefer short sections with clear headings. A section should feel
+  like one idea, not a chapter.
+- When in doubt, err on the side of more detail — the code is the
+  source of truth, but the report explains *why* it's written that way.
+
 ### Markdown (non-LaTeX)
 
 - Use standard GitHub-flavored Markdown.
 - Tables should be pipe-delimited with alignment markers.
 - Code blocks should specify the language for syntax highlighting.
 - Keep line length under 100 characters for readability.
+
+## Auto-commit / auto-push
+
+Unlike the parent `metrology_ir` repo (which has a strict "no auto-commit"
+policy), **the agent should auto-commit and auto-push within this submodule**
+freely. Commits here are informal document snapshots — each report iteration,
+rebuttal update, or template change should be committed and pushed immediately.
+
+This keeps the parent repo's commit history clean while preserving a granular
+document trail here.
+
+## Connection to the parent repo
+
+This submodule is referenced from the parent repo's `AGENTS.md` (the
+`## agent-code-report submodule` section). When you add, update, or delete
+files here, remember to:
+
+1. Commit and push inside this submodule first.
+2. Update the parent pointer in `metrology_ir`:
+   ```bash
+   git add agent-code-report
+   git commit -m "Update agent-code-report submodule: <summary>"
+   ```
+3. Push the parent repo when appropriate (or notify the user to push).
+
+The parent repo's `0main.tex` may also need updating when new numbered files
+are added.
+
+Operational rules:
+- Do NOT use `git -C agent-code-report commit -a` — always stage specific files.
+- The parent repo must never contain uncommitted submodule pointer changes.
 
 ## WIP
 
