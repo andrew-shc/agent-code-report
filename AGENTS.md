@@ -27,10 +27,9 @@ report for validity, questions assumptions, corrects errors, or requests
 further analysis. This is the feedback loop that improves the report and
 guides the next iteration.
 
-Every `IF`/`RP`/`RB` file must open with `\title{...}` (or a top-level
-`#` heading in Markdown) followed by `\maketitle` for `.tex` files —
-this is what makes each document identifiable when compiled or skimmed
-standalone.
+Every `IF`/`RP`/`RB` file must open with `\title{...}` followed by
+`\maketitle` — this is what makes each document identifiable when
+compiled or skimmed standalone.
 
 ## Workflow
 
