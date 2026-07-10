@@ -6,12 +6,12 @@ denoting a specific role.
 
 ## File Prefixes
 
-### `IF_*.tex` — Instruction Following
+### `IF` — Instruction Following
 Human-written instructions for the agent. These define a task, request
 an analysis, or specify what to do next. The agent follows these
 instructions to produce or update a report.
 
-### `RP_*.tex` — Report
+### `RP` — Report
 Agent-generated live document. This is the main output — a detailed
 account of what was done, how the code works, design decisions,
 mishaps, "aha" moments, and any other observations. It references the
@@ -21,11 +21,16 @@ evidence.
 Reports are the place to write down everything: implementation details,
 bugs encountered, performance measurements, and lessons learned.
 
-### `RB_*.tex` — Rebuttal
+### `RB` — Rebuttal
 Human-written response after reviewing a report. The human checks the
 report for validity, questions assumptions, corrects errors, or requests
 further analysis. This is the feedback loop that improves the report and
 guides the next iteration.
+
+Every `IF`/`RP`/`RB` file must open with `\title{...}` (or a top-level
+`#` heading in Markdown) followed by `\maketitle` for `.tex` files —
+this is what makes each document identifiable when compiled or skimmed
+standalone.
 
 ## Workflow
 
@@ -42,11 +47,19 @@ IF → RP → RB → RP → IF/RB → ...
    update `0main.tex` to include any new numbered files.
 5. The cycle continues with new `IF`s and `RB`s as needed.
 
+## Templates
+
+Un-numbered `IF.tex`, `RP.tex`, `RB.tex` live at the **repo root** — do
+not modify. To start a new iteration, copy the relevant template into
+the project folder and number it (see Numbering below).
+
 ## Numbering
 
-- `_0` suffix denotes a **template file** — do not modify.
-- Everything starts at `1` (e.g., `RP_1.tex` is the first report,
-  `IF_1.tex` is the first instruction set).
+- Files inside a project folder are named `<n>_<PREFIX>` (e.g.,
+  `1_RP.tex`, `2_IF.tex`) — number first so the folder sorts
+  numerically instead of alphabetically by prefix.
+- Everything starts at `1` (e.g., `1_RP.tex` is the first report,
+  `1_IF.tex` is the first instruction set).
 - Increment the number with each new iteration in that category.
 
 ## Folder structure
@@ -59,12 +72,12 @@ x/   ← another project
 y/   ← yet another
 ```
 
-Files within a folder belong to that project's document trail. The
-template files (`_0`) live alongside their project's numbered files.
+Files within a folder belong to that project's document trail —
+numbered `IF`/`RP`/`RB` files only; templates stay at the repo root.
 
 ## Agent responsibilities
 
-When the agent creates or updates a numbered file (e.g., `RP_2.tex`),
+When the agent creates or updates a numbered file (e.g., `2_RP.tex`),
 it **must also update `0main.tex`** to include the new file in the
 compilation. This is a common mistake — the entry point must always
 reflect the current document set.
@@ -89,7 +102,7 @@ reflect the current document set.
 - Use the `float` option so the listing can drift to a convenient
   page in the PDF.
 
-### Report writing style
+## Report writing style
 
 - Concise but detailed. Each paragraph should earn its place.
 - No abstract, no acknowledgments — just the substance.
@@ -105,6 +118,15 @@ reflect the current document set.
 - When in doubt, err on the side of more detail — the code is the
   source of truth, but the report explains *why* it's written that way.
 
+Think of a report as **explicit compression** of the agent's working
+session: the agent's internal `compress` tool keeps a high-signal
+context window by summarizing closed conversation sections, but those
+summaries are invisible to the human. A written report makes that same
+compression human-readable and permanent — what remains after
+distilling a 100-message conversation into a few pages of architecture
+decisions, bugs, measurements, and rationale, with concrete file/line
+references and images/tables/listings where they help.
+
 ### Markdown (non-LaTeX)
 
 - Use standard GitHub-flavored Markdown.
@@ -112,65 +134,44 @@ reflect the current document set.
 - Code blocks should specify the language for syntax highlighting.
 - Keep line length under 100 characters for readability.
 
-## Auto-commit / auto-push
+## Git & commit workflow
 
 Unlike the parent `metrology_ir` repo (which has a strict "no auto-commit"
-policy), **the agent should auto-commit and auto-push within this submodule**
-freely. Commits here are informal document snapshots — each report iteration,
-rebuttal update, or template change should be committed and pushed immediately.
+policy), **the agent should auto-commit and auto-push within this submodule
+freely.** Commits here are informal document snapshots — each report
+iteration, rebuttal update, or template change should be committed and
+pushed immediately. This keeps the parent repo's commit history clean
+while preserving a granular document trail here.
 
-This keeps the parent repo's commit history clean while preserving a granular
-document trail here.
+Before pushing, always:
+1. `git pull --rebase origin main` — fetch and rebase local commits on
+   top of remote changes.
+2. Resolve conflicts if any arise. Most are simple (both sides added new
+   content in different sections). If a conflict is complex (same
+   logical line changed meaningfully on both sides), stop and ask the
+   human for guidance.
+3. `git push origin main`
 
-## Connection to the parent repo
-
-This submodule is referenced from the parent repo's `AGENTS.md` (the
-`## agent-code-report submodule` section). When you add, update, or delete
-files here, remember to:
-
-1. Commit and push inside this submodule first.
-2. Update the parent pointer in `metrology_ir`:
-   ```bash
-   git add agent-code-report
-   git commit -m "Update agent-code-report submodule: <summary>"
-   ```
-3. Push the parent repo when appropriate (or notify the user to push).
-
-The parent repo's `0main.tex` may also need updating when new numbered files
+After committing and pushing inside this submodule, update the parent
+repo's pointer:
+```bash
+git add agent-code-report
+git commit -m "Update agent-code-report submodule: <summary>"
+```
+Push the parent repo when appropriate (or notify the user to push). The
+parent repo's `0main.tex` may also need updating when new numbered files
 are added.
 
 Operational rules:
-- Do NOT use `git -C agent-code-report commit -a` — always stage specific files.
-- The parent repo must never contain uncommitted submodule pointer changes.
+- Do NOT use `git -C agent-code-report commit -a` — always stage
+  specific files.
+- The parent repo must never contain uncommitted submodule pointer
+  changes.
+
+This submodule is referenced from the parent repo's `AGENTS.md` (the
+`## agent-code-report submodule` section).
 
 ## WIP
 
 All of this is provisional. When a new convention emerges, add it
 here rather than leaving it implicit.
-
-
-## Git operations
-
-Before pushing, always follow these steps:
-1. `git pull --rebase origin main` — this fetches and rebases local commits on top of remote changes.
-2. If there is a conflict, resolve it. Conflicts are usually simple (e.g., both sides added new content in different sections). If a conflict is complex (same logical line changed meaningfully on both sides), stop and ask the human for guidance.
-3. `git push origin main`
-
-## Reports as explicit compression
-
-Reports serve as a **manual, explicit compression** of the agent's
-conversation context. The agent's internal `compress` tool maintains a
-high-signal context window by summarizing closed conversation sections,
-but those summaries are invisible to the human. Written reports make this
-compression human-readable and permanent.
-
-When writing a report:
-- Distill the key architecture decisions, bugs encountered, performance
-  measurements, and design rationale from the working session.
-- Reference concrete file paths and line numbers (`file.py:123`).
-- Include images, tables, and code listings that capture the state of
-  the work at a point in time.
-- Think of the report as what remains after compressing a 100-message
-  conversation into 5 pages — the signal, none of the noise.
-- Reports complement the agent's internal compression: one is ephemeral
-  (context management), the other is permanent (documentation).
