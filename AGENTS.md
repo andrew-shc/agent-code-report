@@ -101,6 +101,14 @@ reflect the current document set.
 All of this is provisional. When a new convention emerges, add it
 here rather than leaving it implicit.
 
+
+## Git operations
+
+Before pushing, always follow these steps:
+1. `git pull --rebase origin main` — this fetches and rebases local commits on top of remote changes.
+2. If there is a conflict, resolve it. Conflicts are usually simple (e.g., both sides added new content in different sections). If a conflict is complex (same logical line changed meaningfully on both sides), stop and ask the human for guidance.
+3. `git push origin main`
+
 ## Reports as explicit compression
 
 Reports serve as a **manual, explicit compression** of the agent's
