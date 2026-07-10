@@ -1,7 +1,3 @@
-\title{Report 1: Neural-PBIR with PathReSTIR Backward Gradient}
-
-\maketitle
-
 % ---- Requires in 0main.tex: \usepackage{booktabs,siunitx,makecell,xcolor,listings}
 % ---- Requires in 0main.tex: \lstset{...} with Python language settings
 
@@ -16,7 +12,7 @@ PBIR uses a plain PathTracer for both the forward (loss-image) and backward
 especially for specular materials.
 
 PathReSTIR~\cite{restir2020} replaces the backward pass with spatial sample
-resampling: candidates paths are reused across neighboring pixels to reduce
+resampling: candidate paths are reused across neighboring pixels to reduce
 gradient variance at very low sample counts (1\,spp). This report evaluates
 whether PathReSTIR can match standard PBIR quality while reducing the per-pixel
 ray budget by half.
@@ -34,7 +30,11 @@ resampling. The \texttt{renderD()} method performs four passes:
     \item \textbf{Pass 3}: Primary edge gradients (silhouette boundaries).
 \end{enumerate}
 
-Figure~\ref{lst:renderer} shows the core Python autograd wrapper.
+The Python wrapper in \texttt{GREENFIELD/restir/run\_restir.py} defines a
+\texttt{PathReSTIRRenderer} (\texttt{torch.autograd.Function}) that decouples
+forward and backward: the forward pass calls PathTracer \texttt{renderC()} for
+unbiased full-path loss images, while the backward pass calls PathReSTIR
+\texttt{renderD()} for the spatial-resampling gradient.
 
 \begin{lstlisting}[caption={PathReSTIRRenderer --- \texttt{torch.autograd.Function} wrapping PathTracer forward and PathReSTIR backward.},label={lst:renderer},float,floatplacement=t]
 class PathReSTIRFunction(torch.autograd.Function):
@@ -62,14 +62,10 @@ class PathReSTIRFunction(torch.autograd.Function):
         return tuple([None] * ctx.num_no_grads + param_grads)
 \end{lstlisting}
 
-The Python wrapper in \texttt{GREENFIELD/restir/run\_restir.py} defines a
-\texttt{PathReSTIRRenderer} (\texttt{torch.autograd.Function}) that decouples
-forward and backward: the forward pass calls PathTracer \texttt{renderC()} for
-unbiased full-path loss images, while the backward pass calls PathReSTIR
-\texttt{renderD()} for the spatial-resampling gradient. The
-\texttt{PSDRJITConnector} is patched via
+The \texttt{PSDRJITConnector} is patched via
 \texttt{PSDRJITConnector.extensions} to register the \texttt{'path\_restir'}
-integrator type.
+integrator type and re-apply \texttt{use\_face\_normal} after mesh loading
+(PathReSTIR requires this flag).
 
 \section{Experimental Setup}
 
@@ -108,6 +104,43 @@ Metrics are computed using the official Stanford-ORB evaluation harness
 
 All comparisons use the baseline Neural-PBIR published metrics (42-scene average).
 
+\section{Bugs and Lessons Learned}
+
+Several issues were discovered and fixed during the evaluation pipeline
+development. These are documented here so future iterations avoid them.
+
+\texttt{wandb.Json} \textbf{removed in wandb 0.16+.}
+The initial code used \texttt{wandb.Json()} to serialize JSON results for
+upload. This class was removed in wandb 0.16, causing an
+\texttt{AttributeError} at the end of every benchmark run. Fixed by replacing
+with \texttt{wandb.save()}.
+
+\texttt{--scenes example} \textbf{routes only teapot.}
+The Stanford-ORB test harness has a shorthand \texttt{example} that only
+evaluates \texttt{teapot\_scene001}. When running multi-scene evaluations,
+this silently produced incomplete results. Fixed by using \texttt{--scenes auto}
+and filtering the eval input JSON to only include scenes with valid outputs.
+
+\texttt{render\_geo} \textbf{not called by the evaluation pipeline.}
+The \texttt{pipeline\_evaluate.py} script was missing the geometry rendering
+stage (\texttt{render\_geo.py}), which meant depth and normal buffers were
+never generated. The \texttt{eval\_preprocess.py} then asserted on missing
+files. Fixed by adding a \texttt{render\_geo} stage before
+\texttt{eval\_preprocess}.
+
+\texttt{car\_scene004} \textbf{frame index offset.}
+The scene's test frames start at index 64, not 0. The \texttt{render\_geo}
+output filenames (\texttt{0064\_image.*}) didn't match the frame indices
+expected by \texttt{eval\_preprocess.py}, causing assertion failures. This
+was specific to scenes whose test split doesn't start at frame 0.
+
+\textbf{Forward spp had surprisingly little impact.}
+A three-way comparison (forward spp=4, 16, 64 with cand=8, 500 iters) on
+\texttt{teapot\_scene001} showed less than 0.5\,dB difference between the
+best (fwd=16) and worst (fwd=4) configurations. This suggests the backward
+gradient quality from ReSTIR is the dominant factor, not the forward loss
+image noise.
+
 \section{Results}
 
 \begin{table}[ht]
@@ -140,7 +173,6 @@ teapot\_scene001& 23.77 & 30.15 & 21.63 & 29.09 & 35.56 & 4.21 \\
 \end{tabular}
 \end{table}
 
-Table~\ref{tab:results} presents the per-scene and aggregate metrics.
 Key observations:
 
 \begin{itemize}
@@ -164,24 +196,13 @@ Key observations:
     rays/pixel vs 128).
 \end{itemize}
 
-\section{Conclusion and Future Work}
-
-PathReSTIR provides a 2$\times$ speed-up in the PBIR stage while preserving
-shape, geometry, and material quality. The gap in visual metrics (NVS and
-relighting) is attributable to the reduced forward-pass sample count rather than
-the backward-pass algorithm. Promising directions for closing this gap include:
+\section{Next Steps}
 
 \begin{itemize}
-    \item Increasing the number of spatial candidates from 8 to 16 or 32.
-    \item Increasing the forward-pass spp from 16 to 32 (still a ray saving
-    vs the 64-spp standard).
-    \item Tuning the spatial resampling radius and neighbor count per scene.
-    \item Applying temporal reuse (extending ReSTIR to ReSTIR DI) for the
-    backward gradient pass.
+    \item Increase spatial candidates from 8 to 16 or 32 and re-evaluate.
+    \item Increase forward-pass spp from 16 to 32 (still a ray saving vs 64).
+    \item Tune spatial resampling radius and neighbor count per scene.
+    \item Investigate why forward spp had such small impact (fwd=4 vs fwd=64).
+    \item Apply temporal reuse (extending ReSTIR to ReSTIR DI) for the backward
+    gradient pass.
 \end{itemize}
-
-\begin{acks}
-The authors thank the Neural-PBIR and psdr-jit teams for their open-source
-implementations, which made this work possible.
-\end{acks}
-
