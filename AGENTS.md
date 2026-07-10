@@ -100,3 +100,22 @@ reflect the current document set.
 
 All of this is provisional. When a new convention emerges, add it
 here rather than leaving it implicit.
+
+## Reports as explicit compression
+
+Reports serve as a **manual, explicit compression** of the agent's
+conversation context. The agent's internal `compress` tool maintains a
+high-signal context window by summarizing closed conversation sections,
+but those summaries are invisible to the human. Written reports make this
+compression human-readable and permanent.
+
+When writing a report:
+- Distill the key architecture decisions, bugs encountered, performance
+  measurements, and design rationale from the working session.
+- Reference concrete file paths and line numbers (`file.py:123`).
+- Include images, tables, and code listings that capture the state of
+  the work at a point in time.
+- Think of the report as what remains after compressing a 100-message
+  conversation into 5 pages — the signal, none of the noise.
+- Reports complement the agent's internal compression: one is ephemeral
+  (context management), the other is permanent (documentation).
