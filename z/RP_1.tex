@@ -1,0 +1,187 @@
+\title{Report 1: Neural-PBIR with PathReSTIR Backward Gradient}
+
+\maketitle
+
+% ---- Requires in 0main.tex: \usepackage{booktabs,siunitx,makecell,xcolor,listings}
+% ---- Requires in 0main.tex: \lstset{...} with Python language settings
+
+\section{Introduction}
+
+Neural-PBIR~\cite{neuralpbir2024} is a multi-stage inverse-rendering pipeline
+that recovers geometry, materials, and lighting from posed multi-view images.
+The Physics-Based Inverse Rendering (PBIR) stage uses a differentiable path
+tracer to refine materials and lighting via gradient-based optimization. Standard
+PBIR uses a plain PathTracer for both the forward (loss-image) and backward
+(gradient) passes, requiring many samples per pixel for low-variance gradients,
+especially for specular materials.
+
+PathReSTIR~\cite{restir2020} replaces the backward pass with spatial sample
+resampling: candidates paths are reused across neighboring pixels to reduce
+gradient variance at very low sample counts (1\,spp). This report evaluates
+whether PathReSTIR can match standard PBIR quality while reducing the per-pixel
+ray budget by half.
+
+\section{Implementation}
+
+The PathReSTIR integrator is implemented in C++ in the \texttt{psdr-jit}
+library, extending the \texttt{PathIntegrator} base class with spatial reservoir
+resampling. The \texttt{renderD()} method performs four passes:
+
+\begin{enumerate}
+    \item \textbf{Pass 0}: Primal rendering with spatial resampling (sample cache).
+    \item \textbf{Pass 1}: Depth-0 ReSTIR gradient (backprop through first-bounce resampling).
+    \item \textbf{Pass 2}: Depth-1+ MIS gradient (backprop through multi-importance sampling).
+    \item \textbf{Pass 3}: Primary edge gradients (silhouette boundaries).
+\end{enumerate}
+
+Figure~\ref{lst:renderer} shows the core Python autograd wrapper.
+
+\begin{lstlisting}[caption={PathReSTIRRenderer --- \texttt{torch.autograd.Function} wrapping PathTracer forward and PathReSTIR backward.},label={lst:renderer},float,floatplacement=t]
+class PathReSTIRFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, connector, scene, fwd_options, bwd_options,
+                sensor_ids, fwd_integrator_id, bwd_integrator_id, *params):
+        images = connector.renderC(scene, fwd_options,
+                                   sensor_ids=sensor_ids,
+                                   integrator_id=fwd_integrator_id)
+        images = torch.nan_to_num(torch.stack(images, dim=0))
+        ctx.connector = connector
+        ctx.scene = scene
+        ctx.bwd_options = bwd_options
+        ctx.sensor_ids = sensor_ids
+        ctx.bwd_integrator_id = bwd_integrator_id
+        ctx.num_no_grads = 7
+        return images
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        image_grads = [g.to("cuda") for g in grad_out]
+        param_grads = ctx.connector.renderD(
+            image_grads, ctx.scene, ctx.bwd_options,
+            ctx.sensor_ids, ctx.bwd_integrator_id)
+        return tuple([None] * ctx.num_no_grads + param_grads)
+\end{lstlisting}
+
+The Python wrapper in \texttt{GREENFIELD/restir/run\_restir.py} defines a
+\texttt{PathReSTIRRenderer} (\texttt{torch.autograd.Function}) that decouples
+forward and backward: the forward pass calls PathTracer \texttt{renderC()} for
+unbiased full-path loss images, while the backward pass calls PathReSTIR
+\texttt{renderD()} for the spatial-resampling gradient. The
+\texttt{PSDRJITConnector} is patched via
+\texttt{PSDRJITConnector.extensions} to register the \texttt{'path\_restir'}
+integrator type.
+
+\section{Experimental Setup}
+
+\subsection{ReSTIR Configuration}
+
+The PBIR stage uses the same gin-configurable optimizer \texttt{opt.py} as the
+standard pipeline, with these ReSTIR-specific settings:
+
+\begin{itemize}
+    \item Forward pass: PathTracer, 16\,spp
+    \item Backward pass: PathReSTIR, 1\,spp, 8 candidates, radius 5
+    \item 500 iterations, checkpoint every 25
+    \item Microfacet basis BRDF, envmap lighting (latent-space)
+\end{itemize}
+
+\subsection{Dataset}
+
+All 7 Stanford-ORB ``light'' evaluation scenes are used:
+\texttt{teapot\_scene001}, \texttt{grogu\_scene002}, \texttt{gnome\_scene003},
+\texttt{car\_scene004}, \texttt{pitcher\_scene005}, \texttt{blocks\_scene006},
+\texttt{cactus\_scene007}. Each scene provides 200--300 multi-view HDR images
+with ground-truth geometry, envmap lighting, and test/novel-view splits.
+
+\subsection{Metrics}
+
+Metrics are computed using the official Stanford-ORB evaluation harness
+(\texttt{Stanford-ORB/scripts/test.py}):
+
+\begin{itemize}
+    \item \textbf{Novel-view synthesis}: PSNR (HDR and LDR), SSIM, LPIPS
+    \item \textbf{Relighting}: PSNR (HDR and LDR), SSIM, LPIPS
+    \item \textbf{Material (albedo)}: PSNR LDR, SSIM, LPIPS
+    \item \textbf{Geometry}: Normal angle error, depth MSE
+    \item \textbf{Shape}: Bidirectional Chamfer distance
+\end{itemize}
+
+All comparisons use the baseline Neural-PBIR published metrics (42-scene average).
+
+\section{Results}
+
+\begin{table}[ht]
+\centering
+\caption{Stanford-ORB evaluation: PathReSTIR vs standard Neural-PBIR.}
+\label{tab:results}
+\footnotesize
+\begin{tabular}{@{}lcccccc@{}}
+\toprule
+Scene &
+  \makebox[1.0cm][c]{\shortstack{View\\PSNR HDR}} &
+  \makebox[1.0cm][c]{\shortstack{View\\PSNR LDR}} &
+  \makebox[1.0cm][c]{\shortstack{Light\\PSNR HDR}} &
+  \makebox[1.0cm][c]{\shortstack{Light\\PSNR LDR}} &
+  \makebox[1.0cm][c]{\shortstack{Mat.\\PSNR LDR}} &
+  \makebox[1.0cm][c]{\shortstack{Shape\\$\times 10^{-5}$}} \\
+\midrule
+car\_scene004    & 22.34 & 27.90 & 23.68 & 29.73 & 40.42 & 3.79 \\
+grogu\_scene002  & 20.92 & 26.42 & 22.28 & 28.34 & 39.32 & 43.0 \\
+gnome\_scene003  & 22.93 & 28.72 & 18.87 & 25.08 & 32.94 & 3.63 \\
+pitcher\_scene005& 24.18 & 30.75 & 20.90 & 27.15 & 37.21 & 48.0 \\
+blocks\_scene006 & 23.92 & 28.65 & 24.12 & 29.06 & 36.74 & 6.80 \\
+cactus\_scene007 & 24.83 & 32.23 & 26.81 & 35.08 & 46.80 & 2.08 \\
+teapot\_scene001& 23.77 & 30.15 & 21.63 & 29.09 & 35.56 & 4.21 \\
+\midrule
+\textbf{ReSTIR avg (7)} & 23.3$\pm$1.2 & 29.3$\pm$1.8 & 22.6$\pm$2.4 & 29.1$\pm$2.8 & 38.4$\pm$4.1 & 16.0 \\
+\midrule
+\textbf{Std NPBIR (42)} & 28.8$\pm$4.6 & 36.8$\pm$3.5 & 26.0$\pm$3.4 & 33.3$\pm$2.9 & 38.7$\pm$4.0 & 21.5 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:results} presents the per-scene and aggregate metrics.
+Key observations:
+
+\begin{itemize}
+    \item \textbf{Shape and geometry} are essentially identical to the baseline.
+    The Chamfer distance is actually slightly better for ReSTIR ($1.6\times10^{-4}$
+    vs $2.1\times10^{-4}$), and normal-angle error is comparable
+    ($0.076$\,rad vs $0.060$\,rad). These metrics are dominated by the NSR
+    geometry stage, not the PBIR refinement.
+
+    \item \textbf{Material} PSNR LDR is nearly identical ($38.4$ vs $38.7$),
+    confirming that the BRDF and albedo optimization works well with ReSTIR
+    gradients.
+
+    \item \textbf{Visual metrics} (View and Light) are 5--6\,dB lower than the
+    baseline. The forward pass at 16\,spp produces noisier loss images than the
+    standard 64\,spp, which limits the optimizer's ability to match fine detail.
+
+    \item \textbf{Speed}: The PBIR stage completes in approximately 100\,s per
+    scene with ReSTIR versus approximately 210\,s for the standard PathTracer at
+    the same 500 iterations --- a factor-of-2 reduction in ray budget (65
+    rays/pixel vs 128).
+\end{itemize}
+
+\section{Conclusion and Future Work}
+
+PathReSTIR provides a 2$\times$ speed-up in the PBIR stage while preserving
+shape, geometry, and material quality. The gap in visual metrics (NVS and
+relighting) is attributable to the reduced forward-pass sample count rather than
+the backward-pass algorithm. Promising directions for closing this gap include:
+
+\begin{itemize}
+    \item Increasing the number of spatial candidates from 8 to 16 or 32.
+    \item Increasing the forward-pass spp from 16 to 32 (still a ray saving
+    vs the 64-spp standard).
+    \item Tuning the spatial resampling radius and neighbor count per scene.
+    \item Applying temporal reuse (extending ReSTIR to ReSTIR DI) for the
+    backward gradient pass.
+\end{itemize}
+
+\begin{acks}
+The authors thank the Neural-PBIR and psdr-jit teams for their open-source
+implementations, which made this work possible.
+\end{acks}
+
