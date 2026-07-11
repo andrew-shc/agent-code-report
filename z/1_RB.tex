@@ -1,9 +1,20 @@
-\title{Rebuttal 1: }
+\title{Rebuttal 1: ReSIR Validation and Forward Experimental Investigation}
 
 \maketitle
 
-\section{Introduction}
+\section{Clarification}
 
-\section{Template Overview}
+We are not looking to apply all of the features of ReSTIR. We are only interested in the
+spatial resampling (without the temporal resampling). Refer this as ReSIR (not ReSTIR).
 
-\subsection{Template Styles}
+\section{ReSIR in PSDR JIT}
+
+Do not make me search where this function is. Make sure any modification that was not original is recorded in `BROWNFIELD.md` and in your next report, make sure you exactly reference where this ReSIR is. Python wrapper is important but not the most important. \textbf{I really need to verify if you have implemented the ReSIR correctly.} Make sure you explain the ReSIR concept correctly to me, where you implemented, how you implemented (with direct code references), and whether it was done on the adjoint/backward pass or forward pass or both. Another thing, how you integrated the PSDR JIT with ReSIR very precisely.
+
+\section{Misc.}
+
+Make sure the bugs and lessons learned are codified in the code themselves. I do not care about emperical evaluation results right now until the code is verified. Code is very important. Garbage in garbage out (GIGO). If the code is very wrong, then there's no point in applying it. I think its best to distill the conceptual knowledge of ReSTIR (with a T) before applying ReSIR (without a T). In fact, if there are any external libraries that have dones this (including the backward process), please look into it and try use it instead of writing our own code that requires extensive validation.
+
+Another thing, keep your next report (which would be report \#2) as a working/live document. Anything you change or do should be documented in their but keep it concise also (i.e., the important stuff.)
+
+Thank you.

@@ -1,0 +1,31 @@
+\title{Rebuttal 1: Template}
+
+\maketitle
+
+\section{Outstanding Problems}
+
+Voxelization at a limited number of voxels ha limited support volume right (i.e., bounded volume)? How are you ensuring the point clouds, which are inherently unbounded, fit into the voxelizing region?
+
+Between step 2 and 3, do we really need completed mesh? Maybe for logging or visualization purposes, but internally are you directly passing the shape SLaT from stage 2 into stage 3 directly via concatenation? (And not wastefully re-encoding from the mesh?)
+
+In your key arch. decisions, where is this cross-attention K/V coming into play? Aren't we directly inputting the voxelized point cloud data (PCD) into the SS latent space? What is the SS latent space anyway?
+
+In your architectural text-diagram, why are we voxelizing $64^3$ and $512^3$? Is this the cascade model from TRELLIS.2? We do not want to use the cascade model for now because, as before, trying to ensure the data pipeline is correct (please provide the necessary, important code snippets.) And why is it different from the $16^3$ SS latent resolution compared to the voxelized resolution? Or is this something I am misunderstanding?
+
+\section{Data pipeline verification}
+
+I want more verification that the data pipeline is working. Please provide an example (of random object) of the following: a rendered view of the complete object given the camera pose, its ground truth point cloud with the pose and camera direction visualization (as a frustum and an arrow, and the partial-view point cloud that is used for the input.
+
+It is good that there's SOME working end-to-end pipeline that is working. However, I do want to emphasize on the data pipeline working and verified. Do list any errors you additionally have discovered from the previous pipeline and list them in your next report like a working document.
+
+Re-iterate when I feel the data pipeline is working preliminarily:
+\begin{itemize}
+    \item (In your next report,) one rendered view of ONE object given the camera information
+    \item (In your next report,) one albedo and other PBR rendering of the same object of the same pose
+    \item (In your next report,) one ground truth point cloud with one pose and camera direction relative to the one sampled GT point cloud (rendered). But then separately one ground truth point cloud itself in 3D data format (i.e., `.ply`).
+    \item (In your next report,) one partial-view point cloud that is used for the input from the one pose. (Actually, explicitly log the ONE camera pose information.) Only store it in `.ply` format; no rendering.
+    \item (Once the all the above items (previous 4) looks good,) do the above but with a total of 5 objects with each having 5 different views/pose and record the visual tests in the ASSET directory for manual verification.
+    \item (Once the all the above items (previous 5) looks good,) I want you to make this manual visual verification permanent and make a subfolder within the ASSETS directly that randomly samples 5 objects, each with 5 poses/views, for a total of 25 sample points. Randomly between the start of each runs.
+\end{itemize}
+
+Remember, your next report is a live/working doc. Keep it up to date as you progress it (like how we use a checklist and mark it as done as we go down the todo list.)
