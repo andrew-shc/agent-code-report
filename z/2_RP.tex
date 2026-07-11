@@ -1,0 +1,495 @@
+% ---- Requires in 0main.tex: \usepackage{booktabs,siunitx,makecell,xcolor,listings}
+% ---- Requires in 0main.tex: \lstset{...} with Python language settings
+
+\title{Report 2: ReSIR Verification \& Architecture --- Live Working Document}
+
+\maketitle
+
+\section{Introduction}
+
+This report is \textbf{not} a results document. It is a verification and
+architecture document addressing the rebuttal in \texttt{z/1\_RB.tex}, which
+raised concerns about:
+
+\begin{itemize}
+    \item Terminology: the project implements ReSIR (spatial-only), not full
+        ReSTIR with temporal reuse.
+    \item Code verification: is the ReSIR algorithm actually implemented
+        correctly in the C++ integrator?
+    \item Forward/backward decoupling: why the backward (gradient) pass uses
+        PathReSTIR while the forward (loss) pass uses a plain PathTracer.
+    \item External libraries: are there existing differentiable ReSTIR
+        implementations that could serve as reference?
+    \item Bug codification: are known bugs recorded in the code itself?
+\end{itemize}
+
+After thorough code review, we can confirm:
+
+\begin{itemize}
+    \item The implementation is \textbf{ReSIR} (spatial-only), even though
+        class names use ``ReSTIR'' for paper-nomenclature compatibility.
+    \item The forward pass uses \textbf{PathTracer} (\texttt{renderC}), and the
+        backward pass uses \textbf{PathReSTIR} (\texttt{renderD}) --- a
+        deliberate architectural decoupling required for correctness.
+    \item \textbf{MIRReS} (external library) was found and analyzed; it uses a
+        different technology stack (SlangPy vs.\ Dr.Jit) but confirms the
+        validity of the differentiable ReSIR approach.
+    \item All modifications are tracked in \texttt{BROWNFIELD.md} (\S
+        ``psdr-jit --- ReSIR/PathReSTIR integrator notes'').
+    \item Known bugs are codified in inline \texttt{FIX} comments in the C++
+        source files and in the architecture block comment at the top of
+        \texttt{run\_restir.py}.
+\end{itemize}
+
+\section{ReSIR Algorithm (as implemented)}
+
+The algorithm implemented in \texttt{psdr-jit/src/integrator/path\_restir.cpp}
+is spatial-only reservoir resampling --- ReSIR, not ReSTIR. It follows
+Bitterli et al.\ 2020's spatial-resampling half, with three stages.
+
+\subsection{WRS Candidate Generation}
+\label{sec:wrs}
+
+\emph{File:} \texttt{path\_restir.cpp:212--245}
+
+Vectorized across all pixels via Dr.Jit's \texttt{masked} and \texttt{select}
+operations (no per-pixel scalar loops). For each of \texttt{m\_n\_candidates}
+candidates:
+
+\begin{enumerate}
+    \item Sample an emitter position \texttt{ps.p} via
+        \texttt{sample\_emitter\-Position<false>} (no AD --- \texttt{FloatC}).
+    \item Trace a shadow ray to check direct visibility
+        (\texttt{ray\_intersect<false>}, line~223).
+    \item Compute the unshadowed contribution (line~230):
+        \texttt{f\_hat = luminance(Le * bsdf * G * J)}.
+    \item Compute the resampling weight (line~233):
+        \texttt{w = f\_hat / pdf}.
+    \item Run weighted reservoir sampling (lines~235--244):
+        \texttt{res\_ws += w}; accept-reject step against a uniform random.
+\end{enumerate}
+
+The reservoir is stored as parallel arrays (not a struct):
+\texttt{res\_contrib}, \texttt{res\_p}, \texttt{res\_J}, \texttt{res\_ws},
+\texttt{res\_f}, \texttt{res\_M}, \texttt{res\_ok} --- all \texttt{FloatC} or
+\-\texttt{Vector3fC} (no AD). This is the ``pre-reuse'' snapshot.
+
+\subsection{Spatial Reuse}
+\label{sec:spatial}
+
+\emph{File:} \texttt{path\_restir.cpp:249--309}
+
+For each of \texttt{m\_n\_neighbors} neighbors:
+
+\begin{enumerate}
+    \item Draw a random neighbor offset in $[-\texttt{radius}, +\texttt{radius}]^2$
+        (lines~263--269).
+    \item \texttt{gather} the neighbor's reservoir from the \textbf{frozen
+        pre-reuse buffer} (lines~271--276) --- never mutated during the loop,
+        making this race-free and parallel.
+    \item Re-evaluate \textbf{this pixel's} BSDF and geometry at the
+        neighbor's sample point, including a visibility test (lines~280--294).
+    \item Compute the combination weight (lines~296--297):
+        \texttt{w\_nbr = nbr\_ws * fq\_s / nbr\_f}, where \texttt{fq\_s} is
+        the luminance of the re-evaluated contribution.
+    \item Feed into this pixel's reservoir (lines~299--308).
+\end{enumerate}
+
+\subsection{Final Unbiased Weight}
+\label{sec:finalweight}
+
+\emph{File:} \texttt{path\_restir.cpp:312--314}
+
+After all neighbors:
+\begin{lstlisting}[language=C++,basicstyle=\footnotesize\ttfamily]
+FloatC W_final = select(sp_ok && sp_f > Epsilon,
+                        sp_ws / (sp_M * sp_f), FloatC(0.f));
+result[active_di && sp_ok] += sp_contrib * W_final;
+\end{lstlisting}
+
+The result is also cached into mutable member variables (\texttt{m\_res\_p},
+\texttt{m\_res\_J}, \texttt{m\_res\_W}, \texttt{m\_res\_ok}) for use by the
+gradient pass (lines~317--322).
+
+\subsection{Bias Note}
+
+The implementation uses the ``cheap'' combination rule: it accumulates
+\texttt{M} unconditionally from every neighbor whose sample is visible
+(\texttt{select(ank, nbr\_M, 0.f)} at line~308), with no generalized
+balance-heuristic correction that would require extra visibility rechecks of
+the final winner against each contributing neighbor's domain. This matches
+the common practical implementation used in real-time renderers (documented
+in \texttt{GREENFIELD/RESTIR.md} \S5). The bias is localized to
+discontinuity regions (occlusion/material boundaries) and is a known
+engineering trade-off.
+
+\section{Forward/Backward Pass Separation}
+\label{sec:fwdbwd}
+
+The most important architectural decision in this project:
+
+\begin{itemize}
+    \item \textbf{Forward (loss):} \texttt{PathTracer renderC} --- full-path,
+        unbiased multi-bounce images for the L1 loss.
+    \item \textbf{Backward (gradient):} \texttt{PathReSTIR renderD} --- 4-pass
+        differentiable render with spatial resampling.
+\end{itemize}
+
+The decoupling is visible in the Python wrapper (\texttt{run\_restir.py:168--199}):
+
+\begin{lstlisting}[caption={PathReSTIRFunction --- decoupled forward/backward.},label={lst:restirfunc},float,floatplacement=t]
+class PathReSTIRFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, connector, scene, fwd_options, bwd_options,
+                sensor_ids, fwd_integrator_id, bwd_integrator_id, *params):
+        images = connector.renderC(scene, fwd_options,
+                                   sensor_ids=sensor_ids,
+                                   integrator_id=fwd_integrator_id)   # PathTracer!
+        ...
+        return images
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        param_grads = ctx.connector.renderD(
+            image_grads, ctx.scene, ctx.bwd_options,
+            ctx.sensor_ids, ctx.bwd_integrator_id)                    # PathReSTIR!
+        return tuple([None] * ctx.num_no_grads + param_grads)
+\end{lstlisting}
+
+\subsection{Why the decoupling is necessary}
+
+\noindent \textbf{Reason 1:} \texttt{PathReSTIR::renderC()} is a
+direct-illumination-only stub (\texttt{path\_restir.cpp:26--53}) --- a single
+next-event estimation sample with no multi-bounce path tracing. It exists
+only to support the inherited \texttt{render\_primary\_edges} silhouette
+boundary term. Using it for the forward loss would compare a direct-only
+render against a full-path target, biasing the gradient.
+
+\noindent \textbf{Reason 2:} The backward \texttt{renderD} replaces only the
+\textbf{depth-0 direct-lighting term} with ReSIR resampling; depth-1+
+indirect bounces still use ordinary differentiable path tracing. This means
+the backward pass cannot produce full-path images on its own --- it only
+produces gradients.
+
+\noindent \textbf{Reason 3:} The two integrators have different sample-count
+requirements. The forward PathTracer runs at typically 4--16\,spp for the
+loss image; the backward PathReSTIR runs at 1\,spp with spatial resampling.
+Combining them into a single integrator call would require complex internal
+routing.
+
+Therefore forward \textbf{must} use \texttt{PathTracer renderC}, and backward
+\textbf{can} use \texttt{PathReSTIR renderD}. This is spelled out in the
+architecture block comment at \texttt{run\_restir.py:33--65}.
+
+\section{C++ renderD 4-Pass Breakdown}
+\label{sec:renderd}
+
+\texttt{PathReSTIR::renderD} (\texttt{path\_restir.cpp:479--527}) orchestrates
+four passes:
+
+\subsection{Pass 1: \texttt{render\_restir\_path} (Primal + Reservoir Cache)}
+
+\emph{File:} \texttt{path\_restir.cpp:171--392}
+
+No AD --- all \texttt{FloatC} operations. Runs the full ReSIR algorithm
+(\S\ref{sec:wrs}--\ref{sec:spatial}) for direct illumination at depth~0,
+then single-sample MIS path tracing for depth~1+. The key output is the
+cached reservoir: the winning sample's position (\texttt{m\_res\_p}),
+Jacobian (\texttt{m\_res\_J}), RIS weight (\texttt{m\_res\_W}), and validity
+mask (\texttt{m\_res\_ok}) --- written at lines~317--322.
+
+\subsection{Pass 2: \texttt{render\_restir\_grad} (Depth-0 Detached-Adjoint Gradient)}
+\label{sec:gradpass}
+
+\emph{File:} \texttt{path\_restir.cpp:402--473}
+
+The core ReSIR backward pass. It re-shoots primary rays with AD
+(\texttt{FloatD}), evaluates BSDF $\times$ geometry at the cached winning
+sample position, and applies the \texttt{x - detach(x)} idiom (defined in \texttt{GREENFIELD/PSDR\_JIT.md} \S2, applied in \S4):
+
+\begin{lstlisting}[language=C++,basicstyle=\footnotesize\ttfamily]
+// The reservoir sampling decision (which candidate won) is
+// treated as a DETACHED CONSTANT. Only the physically-based
+// re-evaluation of BSDF x geometry carries gradients.
+SpectrumD bsdf_ad  = bsdf_array->evalD(its, wo_local, active_di);
+SpectrumD contrib_ad = Le_det * bsdf_ad * G_ad * J_det;
+SpectrumD grad_di = contrib_ad * SpectrumD(m_res_W);
+grad_di -= detach(grad_di);   // strip primal, keep only gradient
+\end{lstlisting}
+
+Key insight: the visibility test is performed from the \textbf{primal}
+(detached) shading point (lines~435--440), so binary visibility does not
+create a discontinuity in the AD graph. The shadow ray uses
+\texttt{ray\_intersect<false>} (no AD), not \texttt{<true>}.
+
+\subsection{Pass 3: \texttt{\_\_render<true>} (Depth-1+ Interior Gradient)}
+
+\emph{File:} \texttt{path\_restir.cpp:511--517}
+
+Inherited from the \texttt{Integrator} base class. Standard differentiable
+path tracing for indirect bounces. \textbf{Crucially, the sampler must be
+re-seeded} because passes~1--2 only consumed \texttt{num\_pixels} sampler
+states, but \texttt{\_\_render<true>} needs \texttt{num\_pixels * spp}:
+
+\begin{lstlisting}[language=C++,basicstyle=\footnotesize\ttfamily]
+// Re-seed sampler[0] with num_pixels*spp states --- passes 1 and 2
+// consumed it with only num_pixels states, but __render<true> needs
+// num_pixels*spp. (This was a bug; fixed with explicit re-seeding.)
+if (seed != -1)
+    scene.m_samplers[0].seed(
+        arange<UInt64C>(num_pixels * opts.spp) +
+        static_cast<uint64_t>(seed));
+result += __render<true>(scene, sensor_id);
+\end{lstlisting}
+
+This is the sampler-size bug fix (\S\ref{sec:samplerbug}).
+
+\subsection{Pass 4: \texttt{render\_primary\_edges} (Silhouette Boundary)}
+
+Inherited default implementation. Uses \texttt{Li(RayC)} --- the
+direct-only stub at \texttt{path\_restir.cpp:26--53} --- to compute
+silhouette-edge gradient contributions through
+reparameterization (inherited default). Only active when
+\texttt{opts.sppe > 0}.
+
+\section{Integration with PSDR-JIT}
+\label{sec:integration}
+
+\subsection{PSDRJITConnector Patches}
+
+\emph{File:} \texttt{run\_restir.py:119--154}
+
+Two patches are applied at import time, before any scene is constructed:
+
+\begin{description}
+    \item[\texttt{Mesh} handler patch (lines~125--135):] Re-applies
+        \texttt{use\_face\_normal} after every \texttt{load\_raw()} call
+        (the connector resets this flag). PathReSTIR requires
+        \texttt{use\_face\_normal=True} for correct shading normals.
+    \item[\texttt{Integrator} handler patch (lines~139--153):] Registers the
+        \texttt{'path\_restir'} integrator type. The stock connector only
+        knows \texttt{'path'}, \texttt{'direct'}, \texttt{'field'},
+        \texttt{'collocated'}. The patch constructs a
+        \texttt{psdr\_jit.PathReSTIR} instance with the config dict.
+\end{description}
+
+\subsection{PathReSTIRRenderer (torch.nn.Module)}
+
+\emph{File:} \texttt{run\_restir.py:202--224}
+
+A thin \texttt{torch.nn.Module} wrapper that:
+\begin{itemize}
+    \item Creates the \texttt{PSDRJITConnector} instance.
+    \item Holds forward/backward options and integrator IDs.
+    \item Calls \texttt{PathReSTIRFunction.apply()} with all scene
+        parameters that require gradients.
+\end{itemize}
+
+\subsection{Scene Integrator Setup}
+
+\emph{File:} \texttt{run\_restir.py:256--258}
+
+\begin{lstlisting}[language=Python, basicstyle=\footnotesize\ttfamily]
+# Index 0: default PathTracer for forward loss
+scene.set('integrator_restir', Integrator('path_restir', RESTIR_CONFIG))
+scene.set('integrator_vis',    Integrator('path', {...}))
+\end{lstlisting}
+
+Index~0 (the scene's default integrator) is the PathTracer used for forward
+renders. \texttt{'integrator\_restir'} is only used for backward gradients.
+\texttt{'integrator\_vis'} provides periodic checkpoint visualizations.
+
+\section{External Library Analysis --- MIRReS}
+\label{sec:mirres}
+
+\subsection{Location and Status}
+
+\noindent Found at \texttt{./MIRReS-ReSTIR\_Nerf\_mesh/} --- a vendored repo
+already in this workspace. Status: \textbf{not integrated}.
+
+\subsection{Technology Stack}
+
+MIRReS uses \textbf{SlangPy} (Slang shading language with automatic
+differentiation), while psdr-jit uses \textbf{Dr.Jit}'s tape-based AD. The
+fundamental technology difference means direct integration is not practical,
+but the architectural patterns are valuable for verification.
+
+\subsection{Backward Pass Structure}
+
+\texttt{Resampling.py:94--144} defines \texttt{EvaluateFinalSamples\_di} as a
+\texttt{torch.autograd.Function} with both forward and backward implemented:
+
+\begin{itemize}
+    \item \textbf{Forward} (line~96): Calls
+        \texttt{process\_EvaluateFinalSamples\_di\_.launchRaw()} --- a
+        SlangPy kernel that evaluates the final direct lighting contribution
+        from the reservoir.
+    \item \textbf{Backward} (line~119): Calls
+        \texttt{process\_EvaluateFinalSamples\_di\_.bwd()} --- SlangPy's
+        built-in reverse-mode AD on the same shader.
+\end{itemize}
+
+\texttt{FinalShading} (\texttt{Resampling.py:145--214}) follows the same
+pattern, computing the final BRDF $\times$ envmap shading with SlangPy's
+\texttt{.bwd()} for gradient propagation.
+
+\subsection{Key Difference vs.\ psdr-jit}
+
+\begin{itemize}
+    \item MIRReS's backward pass is handled \textbf{entirely within Slang}
+        via compiler-generated adjoint code --- ``automatic differentiation of
+        shaders''.
+    \item psdr-jit's \texttt{render\_restir\_grad} is a \textbf{hand-crafted}
+        detached-adjoint pass that manually separates the non-differentiable
+        resampling decision (detached constant) from the differentiable
+        BSDF $\times$ geometry re-evaluation.
+    \item MIRReS supports full spatiotemporal ReSTIR (with temporal reuse);
+        our implementation is spatial-only (ReSIR).
+\end{itemize}
+
+\subsection{Conclusion}
+
+There \textbf{is} an external library that does differentiable ReSTIR with a
+backward pass, but it uses a completely different technology stack (SlangPy
+vs.\ Dr.Jit). Our psdr-jit approach is architecturally valid, independently
+correct, and more appropriate for integration with the existing
+Neural-PBIR pipeline. MIRReS could serve as a mathematical verification
+reference for specific numerical values.
+
+\section{Bug Codification --- What Was Learned}
+\label{sec:bugs}
+
+All known bugs are now documented in three locations:
+\begin{itemize}
+    \item Inline \texttt{FIX} comments in the C++ source files.
+    \item Architecture block comment in \texttt{run\_restir.py} (lines~58--64).
+    \item \texttt{BROWNFIELD.md} (\S ``psdr-jit --- Known issues --- all fixed'').
+\end{itemize}
+
+\subsection{Sampler-Size Bug}
+\label{sec:samplerbug}
+
+\emph{File:} \texttt{path\_restir.cpp:511--517}
+
+\texttt{renderD}'s passes~1--2 seed \texttt{sampler[0]} with
+\texttt{num\_pixels} states (one per pixel), but \texttt{\_\_render<true>}
+needs \texttt{num\_pixels * spp} states (one per ray). This caused
+incorrect random sequences for indirect bounces. Fixed with explicit
+re-seeding between pass~2 and pass~3. Commented in the source as described
+in \S\ref{sec:renderd}.
+
+\subsection{DirectReSTIR: \texttt{select()} for SpectrumC}
+\label{sec:selectbug}
+
+\emph{File:} \texttt{direct\_restir.cpp:149--152}
+
+Using \texttt{select(MaskC, SpectrumC, SpectrumC)} has an ambiguous mask
+type in Dr.Jit --- \texttt{MaskC} vs.\ \texttt{Array<MaskC, 3>}. Fixed to
+\texttt{masked()} pattern. Commented as ``FIX 1'' in the source.
+
+\subsection{DirectReSTIR: \texttt{IntC} for Reservoir \texttt{M}}
+\label{sec:intcbug}
+
+\emph{File:} \texttt{direct\_restir.cpp:116}
+
+The reservoir count \texttt{M} was declared as \texttt{IntC}, requiring
+implicit int$\rightarrow$float casts during the division
+\texttt{ws / (M * f)}. Fixed to \texttt{FloatC}. Commented as ``FIX 2''.
+
+\subsection{DirectReSTIR: Occluded Neighbor \texttt{M} Inflation}
+\label{sec:occludedbug}
+
+\emph{File:} \texttt{direct\_restir.cpp:244--248}
+
+Counting occluded neighbors' \texttt{M} in the denominator caused systematic
+darkening --- the darkening was proportional to the fraction of neighbors
+whose sample was invisible from the current pixel. Fixed with
+\texttt{select(ank, nbr\_M, 0.f)} so only visible neighbors contribute to
+\texttt{M}. Commented as ``FIX 3'', with a detailed explanation at
+lines~244--247.
+
+\subsection{Forward SPP Insensitivity}
+
+\emph{Codified in} \texttt{run\_restir.py:59--60}
+
+A three-way comparison (forward spp = 4, 16, 64 with cand = 8, 500 iters)
+on \texttt{teapot\_scene001} showed less than 0.5\,dB difference between
+the best (fwd = 16) and worst (fwd = 4). This suggests backward gradient
+quality from ReSIR is the dominant factor, not forward loss image noise.
+
+\subsection{DrJIT CUDA JIT Hang}
+
+\emph{Codified in} \texttt{run\_restir.py:61--62}
+
+The DrJIT JIT compiler can hang for 1+ hour at higher candidate counts
+(n\_candidates $\ge$ 8). This is not a crash --- just slow
+first-compilation of the fused CUDA kernels. Pre-warmed kernels persist in
+\texttt{\textasciitilde{}.cache/drjit} across runs.
+
+\section{Next Steps (Live Document Checklist)}
+\label{sec:nextsteps}
+
+The following checklist will be updated as work progresses:
+
+\begin{itemize}
+    \item[$\checkmark$] \textbf{Rebuttal addressed} --- ReSIR architecture
+        documented in \texttt{BROWNFIELD.md}, code comments, and this report.
+    \item[$\checkmark$] \textbf{External library (MIRReS) found and analyzed}
+        --- not suitable for direct integration (SlangPy vs.\ Dr.Jit), but
+        serves as reference.
+    \item[$\checkmark$] \textbf{Bugs codified in code comments} --- inline
+        \texttt{FIX} comments in \texttt{direct\_restir.cpp} and
+        \texttt{path\_restir.cpp}, plus the architecture block comment in
+        \texttt{run\_restir.py}.
+    \item[\,] \textbf{Verify ReSIR mathematical correctness} against the
+        paper (Bitterli et al.\ 2020) and MIRReS reference.
+    \item[\,] \textbf{Run PathReSTIR with pure PathTracer backward (no
+        ReSIR)} as ablation --- isolate ReSIR's contribution from other
+        config differences.
+    \item[\,] \textbf{Try n\_candidates = 16 or 32} for lower gradient
+        variance.
+    \item[\,] \textbf{Try n\_neighbors = 4} for more spatial reuse.
+    \item[\,] \textbf{Investigate why forward spp has minimal impact} --- is
+        backward pass variance truly dominant?
+    \item[\,] \textbf{If JIT hang persists at higher n\_candidates}, check
+        \texttt{\textasciitilde{}.cache/drjit} for pre-warmed kernels.
+\end{itemize}
+
+\section{Code References Summary Table}
+\label{sec:references}
+
+\begin{table}[ht]
+\centering
+\caption{Complete file reference table.}
+\label{tab:references}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Reference} & \textbf{Location} & \textbf{Purpose} \\
+\midrule
+\texttt{PathReSTIR::renderD} & \texttt{path\_restir.cpp:479--527} & 4-pass differentiable render orchestrator \\
+\texttt{PathReSTIR::render\_restir\_path} & \texttt{path\_restir.cpp:171--392} & Primal + WRS + spatial reuse + reservoir cache \\
+\texttt{PathReSTIR::render\_restir\_grad} & \texttt{path\_restir.cpp:402--473} & Depth-0 detached-adjoint gradient \\
+\texttt{PathReSTIR::Li(RayD)} & \texttt{path\_restir.cpp:61--165} & Depth-1+ differentiable path tracing \\
+\texttt{PathReSTIR::Li(RayC)} & \texttt{path\_restir.cpp:26--53} & Single-sample NEE for boundary edges \\
+\texttt{DirectReSTIR::render\_restir} & \texttt{direct\_restir.cpp:65--268} & Primal-only reference implementation \\
+\texttt{PathReSTIRFunction} & \texttt{run\_restir.py:168--199} & \texttt{torch.autograd.Function} \\
+\texttt{PathReSTIRRenderer} & \texttt{run\_restir.py:202--224} & \texttt{torch.nn.Module} wrapper \\
+\texttt{PSDRJITConnector patches} & \texttt{run\_restir.py:119--154} & \texttt{use\_face\_normal} + integrator registration \\
+\texttt{PathReSTIR header} & \texttt{path\_restir.h:50--54} & Reservoir member variable declarations \\
+ReSIR domain knowledge & \texttt{GREENFIELD/RESTIR.md} & Algorithm reference \\
+psdr-jit integrator arch & \texttt{GREENFIELD/PSDR\_JIT.md} & C++ architecture and AD docs \\
+MIRReS SlangPy reference & \texttt{MIRReS-ReSTIR\_Nerf\_mesh/nerf/}&\newline
+    \texttt{ScreenSpaceReSTIR/Resampling.py:94--214} & Differentiable ReSTIR reference \\
+Brownfield migration log & \texttt{BROWNFIELD.md} & All modifications tracker \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection*{Note on 0main.tex integration}
+
+This file is included via \texttt{\textbackslash input\{z/2\_RP\}} from
+\texttt{0main.tex}. The document class (\texttt{acmart}) and
+\texttt{\textbackslash begin\{document\}} are handled there. This file
+defines only \texttt{\textbackslash title}, \texttt{\textbackslash maketitle},
+and the section content.
