@@ -41,6 +41,71 @@ After thorough code review, we can confirm:
         \texttt{run\_restir.py}.
 \end{itemize}
 
+\section{ReSTIR Domain Knowledge (conceptual)}
+\label{sec:restir_concept}
+
+Before examining our ReSIR implementation, it is important to understand the
+ReSTIR algorithm from which it derives. ReSTIR (Spatiotemporal Reservoir
+Resampling, Bitterli et al.\ 2020) is a Monte Carlo variance-reduction
+technique for real-time direct lighting. It has three core ideas:
+
+\subsection{Resampled Importance Sampling (RIS)}
+
+RIS generates $M$ candidates from a cheap source distribution $p(x)$ (e.g.\
+uniform over lights, no visibility check). Each candidate is weighted by
+$w_i = \hat{p}(x_i) / p(x_i)$, where $\hat{p}$ is a cheap approximation of the
+true integrand (e.g.\ unshadowed BSDF $\times$ geometry). One candidate $y$ is
+selected with probability proportional to $w_i$, and the unbiased contribution
+weight is:
+
+\[
+W_y = \frac{1}{\hat{p}(y)} \cdot \frac{1}{M} \sum_{i=1}^{M} w_i
+\]
+
+This is the Weighted Reservoir Sampling (WRS) mechanism, which is streaming:
+candidates can be processed one at a time without storing them all.
+
+\subsection{Spatial Reuse}
+
+After each pixel generates its own reservoir via RIS, neighbouring pixels'
+reservoirs are combined. For each neighbour $s$, the neighbour's winning sample
+$y_s$ is re-evaluated at \emph{the current pixel's} shading point $q$ with full
+visibility, producing $f_q(y_s)$. The combination weight is:
+
+\[
+w_s = W_s \cdot M_s \cdot f_q(y_s) = \frac{w_{\text{sum},s}}{f_s(y_s)} \cdot f_q(y_s)
+\]
+
+where $W_s$ is the neighbour's RIS weight, $M_s$ is its candidate count, and
+$f_s(y_s)$ was the luminance used to compute the neighbour's own weight. The
+neighbour's reservoir is a \textbf{frozen, pre-reuse snapshot} --- it is read
+but never mutated during the loop, making spatial reuse embarrassingly parallel.
+
+\subsection{Unbiased Estimator and the Cheap Combination Rule}
+
+After combining all neighbours, the final contribution weight is:
+
+\[
+W_{\text{final}} = \frac{w_{\text{sum}}}{M_{\text{total}} \cdot f_q(y_{\text{final}})}
+\]
+
+where $M_{\text{total}}$ is the sum of candidate counts from all contributing
+neighbourhood reservoirs. The ``cheap combination'' rule accumulates $M$ from
+all neighbours whose sample is visible from the current pixel, without the
+generalized balance-heuristic correction that would require extra visibility
+re-checks of the final winner against each neighbour's domain. This trades full
+unbiasedness for practical efficiency, with the bias localized to occlusion and
+material-discontinuity boundaries. See \texttt{GREENFIELD/RESTIR.md} \S5 for
+the detailed analysis.
+
+\subsection{Why ReSIR (no temporal reuse)}
+
+Our implementation is ReSIR (spatial-only) --- we omit the temporal reuse
+component that would cache reservoirs from previous frames. This is valid for
+inverse rendering of static scenes, where there is only one frame to optimize
+over. Temporal reuse would add unnecessary complexity and assumes a frame
+sequence. See the naming note in \texttt{run\_restir.py:88--92}.
+
 \section{ReSIR Algorithm (as implemented)}
 
 The algorithm implemented in \texttt{psdr-jit/src/integrator/path\_restir.cpp}
@@ -347,14 +412,40 @@ pattern, computing the final BRDF $\times$ envmap shading with SlangPy's
         our implementation is spatial-only (ReSIR).
 \end{itemize}
 
-\subsection{Conclusion}
+\subsection{Conclusion and Integration Attempt}
 
-There \textbf{is} an external library that does differentiable ReSTIR with a
-backward pass, but it uses a completely different technology stack (SlangPy
-vs.\ Dr.Jit). Our psdr-jit approach is architecturally valid, independently
-correct, and more appropriate for integration with the existing
-Neural-PBIR pipeline. MIRReS could serve as a mathematical verification
-reference for specific numerical values.
+We attempted to use MIRReS in our conda environment (\texttt{metrology\_ir},
+Python 3.11, CUDA 12.4). The results:
+
+\begin{itemize}
+    \item \textbf{Python-level import succeeds}: After installing 6 missing
+        packages (slangpy, xatlas, tensorboardX, torchmetrics, torch\_ema,
+        pymeshlab), \texttt{from ScreenSpaceReSTIR import Resampling} imports
+        cleanly. The MIRReS entry point (\texttt{main.py}) also imports without
+        error.
+    \item \textbf{Slang kernel dispatch fails}: The MIRReS code uses an API
+        pattern --- \texttt{slangpy.loadModule(...).fn(...).launchRaw(...)} ---
+        that does not exist in any public release of slangpy (tested versions
+        0.12.0 through 0.42.0). The closest public API uses
+        \texttt{Module.load\_from\_file} and \texttt{fn.dispatch}, which have
+        different signatures.
+    \item \textbf{13 callsites} in \texttt{nerf/renderer\_restir.py} and
+        \texttt{ScreenSpaceReSTIR/*.py} would need adaptation to bridge the API
+        gap.
+\end{itemize}
+
+Therefore MIRReS cannot be used as a drop-in replacement or direct
+cross-validation target without a significant compatibility layer for its
+Slang kernel dispatch. The Python-level algorithmic structure in
+\texttt{ScreenSpaceReSTIR/Resampling.py} remains a valid architectural
+reference, but the actual GPU-accelerated sampling must run through our
+own Dr.Jit-based pipeline.
+
+This finding strengthens the argument for our own implementation: the psdr-jit
+PathReSTIR is the only differentiable ReSIR implementation available in our
+technology stack (Dr.Jit/psdr-jit), and the extensive test suite (24 tests,
+36/36 passing with documented xfail/skip cases) provides the verification that
+an external dependency would have otherwise supplied.
 
 \section{Bug Codification --- What Was Learned}
 \label{sec:bugs}
