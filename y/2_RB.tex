@@ -1,0 +1,19 @@
+\title{Rebuttal Y/2}
+
+\maketitle
+
+\section{Comments}
+
+\begin{itemize}
+    \item Keep the bugs internalized in their respective code files and keep a general summary in the report
+    \item Keep the report small (3 pages at most)
+    \item Something very wrong with the partial view point-cloud. Try: first sample points by, given the camera pose, projecting the pixels sampled on the object silhouette (or something along the lines of that) and get the 3D ray-intersection position from the intersecting geometry to actually get a proper partial view point cloud? I think the last iteration in the `/OLD` directory has this code properly implemented somewhere.
+    \item The frustum looks atrocious and wrong. The fustum might be too big in the visualization, try smallar frustum size and make sure it is correct.
+    \item Would be great if the visualization is in GIF to spatially show the visualization correctly without needing to open up an expensive local 3D viewer to self-verify (you and me.)
+    \item Add re-decoded GT mesh rendering (GIF?) with the output latents explicitly to self-verify we are correctly using TRELLIS2's VAE.
+\end{itemize}
+
+\section{Verification of the Training Pipeline}
+
+Once the aforementioned lists are done, train an end-to-end pipeline on ONE OBJECT with MANY PARTIAL VIEWS. To check the training is working correctly, we use the trained weights to run inference on the \textit{same} object used to train but with \textit{different} camera pose (i.e., view.). Explicitly reference the weight checkpoints and make sure wandb logging is done. I want result, you want result, let's get it verified.
+

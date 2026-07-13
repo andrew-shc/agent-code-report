@@ -1,0 +1,28 @@
+\title{Rebuttal Z/2: Further Self-Verify Forward ReSIR and Empirical Results}
+
+\maketitle
+
+\section{Comments}
+
+\begin{itemize}
+    \item Please change all ReSTIR reference into "ReSIR"---please
+    \item Why is algorithm 3 not directly referenced from the paper? It would help us back-verify your conceptual understanding of weighted reservoir sampling as a RIS with streaming. And yes, it's not weighted reservoir sampling (WRS), it includes concepts from RIS (i.e., it's not just any weights ok.)
+    \item Make the code more readable by making it more modular. Especially when we have the backward ReSIR that would benefit with the de-duplication of the code but also the boring stuff from the path tracer (i.e., preferably emphasize novel components that is the ReSIR and abstract away the boring parts.)
+    \item Also follow Algorithm 6's unbiased combination with the heuristics enabled as a hpyerparameter/config option. Make sure to tell me conceptually how it works to self-verify your understanding. Notably, what is `evalC` doing in step 3? Isn't the point of ReSIR is to re-use samples? And not do the whole computationally-expensive rendering again?
+    \item For the neighborhood sampling, ensure no neighboring pixels are sampled more than once (if it has yet to be done.)
+    \item Clarify your unbiased combination of multiple reservoirs of your implementation
+    \item Please include C++ code snippet for the core code from psdr-jit? IDGAF about wrapper code that you keep shoving me down with the Python code snippets (line reference is enough; still need a reference somewhere just not explictily.)
+    \item Keep the backward ReSIR configurable/optional also
+\end{itemize}
+
+\section{Empirical Evaluations}
+
+Ok moving on. Make sure that your Cornell box simple validation case is working and reported in `wandb` with some explicit visualization in your next report. Importantly, compare the time it takes to compute the inverse rendering process and the important high-level hyperparameters such as ReSIR on the backward or not and ReSIR on the forward or not, unbiased or not. If too much combination, prefer unbiased implementation over biased.
+
+Additionally, I want the full benchmark results (across shapes, relighting, novel view synthesis) comparison on the basic set of Stanford-ORB scenes. Additionally, I want you to record the time it takes to do the PBIR stage (the last stage), since at the end of the day we are augmenting the PBIR stage of Neural-PBIR. Make sure to make a table to record the results.
+
+
+Make sure the report is descriptive but also concise (like at most 3 pages.)
+
+
+
