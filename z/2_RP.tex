@@ -95,7 +95,7 @@ all neighbours whose sample is visible from the current pixel, without the
 generalized balance-heuristic correction that would require extra visibility
 re-checks of the final winner against each neighbour's domain. This trades full
 unbiasedness for practical efficiency, with the bias localized to occlusion and
-material-discontinuity boundaries. See \texttt{GREENFIELD/RESTIR.md} \S5 for
+material-discontinuity boundaries. See \texttt{OLD/RESTIR.md} \S5 for
 the detailed analysis.
 
 \subsection{Why ReSIR (no temporal reuse)}
@@ -104,7 +104,7 @@ Our implementation is ReSIR (spatial-only) --- we omit the temporal reuse
 component that would cache reservoirs from previous frames. This is valid for
 inverse rendering of static scenes, where there is only one frame to optimize
 over. Temporal reuse would add unnecessary complexity and assumes a frame
-sequence. See the naming note in \texttt{run\_restir.py:88--92}.
+sequence. See the naming note in \texttt{run\_restir.py:91--95}.
 
 \section{ReSIR Algorithm (as implemented)}
 
@@ -184,7 +184,7 @@ The implementation uses the ``cheap'' combination rule: it accumulates
 balance-heuristic correction that would require extra visibility rechecks of
 the final winner against each contributing neighbor's domain. This matches
 the common practical implementation used in real-time renderers (documented
-in \texttt{GREENFIELD/RESTIR.md} \S5). The bias is localized to
+in \texttt{OLD/RESTIR.md} \S5). The bias is localized to
 discontinuity regions (occlusion/material boundaries) and is a known
 engineering trade-off.
 
@@ -200,7 +200,7 @@ The most important architectural decision in this project:
         differentiable render with spatial resampling.
 \end{itemize}
 
-The decoupling is visible in the Python wrapper (\texttt{run\_restir.py:168--199}):
+The decoupling is visible in the Python wrapper (\texttt{run\_restir.py:171--202}):
 
 \begin{lstlisting}[caption={PathReSTIRFunction --- decoupled forward/backward.},label={lst:restirfunc},float,floatplacement=t]
 class PathReSTIRFunction(torch.autograd.Function):
@@ -244,7 +244,7 @@ routing.
 
 Therefore forward \textbf{must} use \texttt{PathTracer renderC}, and backward
 \textbf{can} use \texttt{PathReSTIR renderD}. This is spelled out in the
-architecture block comment at \texttt{run\_restir.py:33--65}.
+architecture block comment at \texttt{run\_restir.py:3--68}.
 
 \section{C++ renderD 4-Pass Breakdown}
 \label{sec:renderd}
@@ -322,16 +322,16 @@ reparameterization (inherited default). Only active when
 
 \subsection{PSDRJITConnector Patches}
 
-\emph{File:} \texttt{run\_restir.py:119--154}
+\emph{File:} \texttt{run\_restir.py:122--157}
 
 Two patches are applied at import time, before any scene is constructed:
 
 \begin{description}
-    \item[\texttt{Mesh} handler patch (lines~125--135):] Re-applies
+    \item[\texttt{Mesh} handler patch (lines~126--138):] Re-applies
         \texttt{use\_face\_normal} after every \texttt{load\_raw()} call
         (the connector resets this flag). PathReSTIR requires
         \texttt{use\_face\_normal=True} for correct shading normals.
-    \item[\texttt{Integrator} handler patch (lines~139--153):] Registers the
+    \item[\texttt{Integrator} handler patch (lines~140--157):] Registers the
         \texttt{'path\_restir'} integrator type. The stock connector only
         knows \texttt{'path'}, \texttt{'direct'}, \texttt{'field'},
         \texttt{'collocated'}. The patch constructs a
@@ -340,7 +340,7 @@ Two patches are applied at import time, before any scene is constructed:
 
 \subsection{PathReSTIRRenderer (torch.nn.Module)}
 
-\emph{File:} \texttt{run\_restir.py:202--224}
+\emph{File:} \texttt{run\_restir.py:205--227}
 
 A thin \texttt{torch.nn.Module} wrapper that:
 \begin{itemize}
@@ -352,7 +352,7 @@ A thin \texttt{torch.nn.Module} wrapper that:
 
 \subsection{Scene Integrator Setup}
 
-\emph{File:} \texttt{run\_restir.py:256--258}
+\emph{File:} \texttt{run\_restir.py:260--261}
 
 \begin{lstlisting}[language=Python, basicstyle=\footnotesize\ttfamily]
 # Index 0: default PathTracer for forward loss
@@ -453,7 +453,7 @@ an external dependency would have otherwise supplied.
 All known bugs are now documented in three locations:
 \begin{itemize}
     \item Inline \texttt{FIX} comments in the C++ source files.
-    \item Architecture block comment in \texttt{run\_restir.py} (lines~58--64).
+    \item Architecture block comment in \texttt{run\_restir.py} (lines~58--67).
     \item \texttt{BROWNFIELD.md} (\S ``psdr-jit --- Known issues --- all fixed'').
 \end{itemize}
 
@@ -539,7 +539,7 @@ The following checklist will be updated as work progresses:
         documented in \texttt{test\_gradients.py}).
     \item[$\checkmark$] \textbf{Write automated tests} --- done: 24 tests (21
         passing) across 3 files in \texttt{GREENFIELD/tests/}.
-    \item[\,] \textbf{Verify ReSIR mathematical correctness} against the
+    \item[$\checkmark$] \textbf{Verify ReSIR mathematical correctness} against the
         paper (Bitterli et al.\ 2020) and MIRReS reference.
     \item[\,] \textbf{Run PathReSTIR with pure PathTracer backward (no
         ReSIR)} as ablation --- isolate ReSIR's contribution from other
@@ -547,7 +547,7 @@ The following checklist will be updated as work progresses:
     \item[\,] \textbf{Try n\_candidates = 16 or 32} for lower gradient
         variance.
     \item[\,] \textbf{Try n\_neighbors = 4} for more spatial reuse.
-    \item[\,] \textbf{Investigate why forward spp has minimal impact} --- is
+    \item[$\checkmark$] \textbf{Investigate why forward spp has minimal impact} --- is
         backward pass variance truly dominant?
     \item[\,] \textbf{If JIT hang persists at higher n\_candidates}, check
         \texttt{\textasciitilde{}.cache/drjit} for pre-warmed kernels.
@@ -563,7 +563,7 @@ verify the differentiable ReSIR pipeline:
         reference implementation with mathematical invariant tests (WRS
         streaming, numerical stability, variance reduction, $x -
         \operatorname{detach}(x)$ AD idiom).
-    \item \textbf{test\_autograd.py} (21/22 passing, 1 xfail): CUDA
+    \item \textbf{test\_autograd.py} (6/7 passing, 1 xfail): CUDA
         integration tests. Test 4 (autograd chain) is the key verification:
         forward PathTracer render $\to$ L1 loss $\to$ backward through
         PathReSTIR $\to$ finite, non-zero vertex gradients.
@@ -623,17 +623,17 @@ test suite to at most one backward-pass test per invocation.
 \texttt{PathReSTIR::Li(RayD)} & \texttt{path\_restir.cpp:61--165} & Depth-1+ differentiable path tracing \\
 \texttt{PathReSTIR::Li(RayC)} & \texttt{path\_restir.cpp:26--53} & Single-sample NEE for boundary edges \\
 \texttt{DirectReSTIR::render\_restir} & \texttt{direct\_restir.cpp:65--268} & Primal-only reference implementation \\
-\texttt{PathReSTIRFunction} & \texttt{run\_restir.py:168--199} & \texttt{torch.autograd.Function} \\
-\texttt{PathReSTIRRenderer} & \texttt{run\_restir.py:202--224} & \texttt{torch.nn.Module} wrapper \\
-\texttt{PSDRJITConnector patches} & \texttt{run\_restir.py:119--154} & \texttt{use\_face\_normal} + integrator registration \\
+\texttt{PathReSTIRFunction} & \texttt{run\_restir.py:171--202} & \texttt{torch.autograd.Function} \\
+\texttt{PathReSTIRRenderer} & \texttt{run\_restir.py:205--227} & \texttt{torch.nn.Module} wrapper \\
+\texttt{PSDRJITConnector patches} & \texttt{run\_restir.py:122--157} & \texttt{use\_face\_normal} + integrator registration \\
 \texttt{PathReSTIR header} & \texttt{path\_restir.h:50--54} & Reservoir member variable declarations \\
-ReSIR domain knowledge & \texttt{GREENFIELD/RESTIR.md} & Algorithm reference \\
+ReSIR domain knowledge & \texttt{OLD/RESTIR.md} & Algorithm reference \\
 psdr-jit integrator arch & \texttt{GREENFIELD/PSDR\_JIT.md} & C++ architecture and AD docs \\
 MIRReS SlangPy reference & \texttt{MIRReS-ReSTIR\_Nerf\_mesh/nerf/}&\newline
     \texttt{ScreenSpaceReSTIR/Resampling.py:94--214} & Differentiable ReSTIR reference \\
 Brownfield migration log & \texttt{BROWNFIELD.md} & All modifications tracker \\
 \texttt{test\_resir\_math.py} & \texttt{GREENFIELD/tests/} & Pure-Python ReSIR reference, 15/15 pass \\
-\texttt{test\_autograd.py} & \texttt{GREENFIELD/tests/} & CUDA integration tests, 21/22 pass (1 xfail) \\
+\texttt{test\_autograd.py} & \texttt{GREENFIELD/tests/} & CUDA integration tests, 6/7 pass (1 xfail) \\
 \texttt{test\_gradients.py} & \texttt{GREENFIELD/tests/} & Finite-difference gradient verification, 0/2 (1 xfail, 1 skip) \\
 \bottomrule
 \end{tabular}
