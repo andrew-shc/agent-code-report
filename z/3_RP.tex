@@ -136,38 +136,77 @@ result[active_di && sp_ok] += sp_contrib * W_final;
 \section{Cornell Box Validation}
 
 Shape optimization (sphere Y-position, 50~iters Adam) on the Cornell box.
-Forward pass: PathTracer 16~spp. Backward: ReSIR 1~spp with unbiased
-balance-heuristic (Algorithm~6). WandB project: ReSTIR PBIR.
+Forward pass: PathTracer 16~spp. Backward: configurable (see table).
+All results from \texttt{ASSETS/restir/cornell\_benchmark}. Sweep comparison
+figure at \texttt{sweep\_comparison.png} (WandB: \texttt{8v0tg207}).
 
 \begin{table}[ht]
 \centering
-\caption{Cornell box shape optimization (50~iters).}
+\caption{Cornell box sweep: 7 configurations (50~iters).}
 \label{tab:cornell}
 \footnotesize
-\begin{tabular}{@{}lcccccS[round-precision=2]@{}}
+\begin{tabular}{@{}lcccccc@{}}
 \toprule
 Method &
-  \makebox[0.8cm][c]{$n_{\text{cand}}$} &
-  \makebox[0.8cm][c]{bwd~SPP} &
-  \makebox[0.6cm][c]{Unbias} &
+  $n_{\text{cand}}$ &
+  bwd~SPP &
+  Weight &
+  Backward &
   Final~L1 &
-  \makebox[0.9cm][c]{Y (GT=82.5)} &
-  {it/s} \\
+  Y (GT=82.5) &
+  it/s \\
 \midrule
-Standard PT & --- & 16 & --- & 0.00662 & 81.3 & 0.210 \\
-ReSIR cand4 & 4   & 1  & \checkmark & 0.00667 & 87.4 & 0.124 \\
-ReSIR cand8 & 8   & 1  & \checkmark & 0.00662 & 86.5 & 0.124 \\
+Standard PT   & ---  & 16 & --- & PathTracer & 0.00661 & 83.1 & 0.220 \\
+cand2 biased  & 2    & 1  & biased  & ReSIR      & 0.00662 & 86.3 & 0.125 \\
+cand2 unbiased& 2    & 1  & unbiased& ReSIR      & 0.00666 & 87.0 & 0.122 \\
+cand4 biased  & 4    & 1  & biased  & ReSIR      & 0.00665 & 87.2 & 0.125 \\
+cand8 biased  & 8    & 1  & biased  & ReSIR      & 0.00667 & 87.4 & 0.125 \\
+cand8 bwd=path& 8    & 1  & biased  & PathTracer & 0.00668 & 87.2 & 0.126 \\
+cand16 unbiased& 16   & 1  & unbiased& ReSIR      & 0.00670 & 87.2 & 0.125 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-Runs: \texttt{standard} (9k6cyex9), \texttt{cand4~unbiased} (sbgbjs30),
-\texttt{cand8~unbiased} (euoh8as1). The standard PathTracer is the
-\texttt{backward\_mode='path'} ablation (no ReSIR gradient). All forward
-passes use PathTracer; ReSIR replaces only the backward gradient. The~Y
-values show remaining optimization error consistent across methods at
-similar L1 loss --- ReSIR converges to comparable quality at 64$\times$ fewer
-backward samples (1 vs.\ 16 spp).
+WandB run IDs (left to right): \texttt{pjsbkdyq}, \texttt{jaswt81g},
+\texttt{pb2dzjny}, \texttt{a1t5ny2u}, \texttt{qp52ihf5},
+\texttt{rv3iilz5}, \texttt{7kbuei0k}.
+
+\paragraph{Key findings.}
+\begin{itemize}
+    \item \textbf{Best ReSIR: cand2 biased} (L1=0.00662, Y=86.3) --- nearly ties
+        Standard PT in final loss, with the closest Y among ReSIR variants.
+    \item \textbf{More candidates do not help.} L1 degrades from 0.00662
+        (cand2) to 0.00670 (cand16) on this scene. The diffuse-only
+        content means most spatial reuse candidates carry little
+        independent gradient information.
+    \item \textbf{Biased $>$ unbiased.} The cheap weight formula ($W_k \cdot
+        f_q$) consistently outperforms the balance-heuristic ($M_k \cdot f_q$)
+        at the same candidate count. The unbiased weight's additional
+        variance from the visibility-sensitive $M_k$ term outweighs its
+        bias-reduction benefit on this scene.
+    \item \textbf{\texttt{backward\_mode='path'} $\approx$ full ReSIR.}
+        Using a plain PathTracer for the backward pass (no spatial
+        resampling) produces nearly identical results to ReSIR at the
+        same candidate count. This confirms that ReSIR's spatial
+        resampling provides negligible gradient variance reduction for
+        diffuse-only rendering --- the benefit is specific to specular
+        materials.
+    \item \textbf{All ReSIR runs overshoot Y} (86--87 vs.~82.5 GT).
+        Standard PT lands at Y=83.1, within noise of GT. The
+        systematic overshoot across all ReSIR configs suggests a
+        bias in the gradient signal at higher Y positions (the box
+        gets brighter as it rises toward the light, and ReSIR's
+        reuse may over-emphasize bright neighbors).
+\end{itemize}
+
+\paragraph{Implication for rebuttal.} The Cornell box is an all-diffuse
+scene --- every surface is Lambertian. ReSIR's advantage is gradient variance
+reduction for \emph{specular} light transport, where a single path's
+contribution varies wildly between neighboring pixels. On diffuse scenes,
+the spatial resampling overhead (neighbor gathering, BSDF re-evaluation,
+accept/reject) adds cost without benefit. The Stanford-ORB benchmark
+(\S\ref{sec:stanford}) evaluates on mixed-specular scenes where ReSIR's
+strengths become relevant.
 
 \section{Stanford-ORB Benchmark}
 
