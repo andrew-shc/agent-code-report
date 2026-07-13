@@ -7,11 +7,10 @@
 
 \section{Introduction}
 
-This report addresses the rebuttal in \texttt{z/2\_RB.tex}. All Phase~1 code
-changes are complete: terminology (ReSTIR$\to$ReSIR), modular refactor
-(\texttt{restir\_core.py}), unbiased balance-heuristic toggle (Algorithm~6),
-backward-mode configuration, and neighborhood uniqueness fix. We present
-Cornell-box shape optimization and full Stanford-ORB benchmarks.
+This report addresses \texttt{z/2\_RB.tex}. Phase~1 changes are complete
+(terminology ReSTIR$\to$ReSIR, \texttt{restir\_core.py} refactor, unbiased
+toggle per Algorithm~6, backward-mode configuration, neighborhood uniqueness).
+Below: Cornell-box sweep, Stanford-ORB benchmarks, and PBIR timing.
 
 \section{Terminology \& Algorithm Reference}
 
@@ -52,17 +51,13 @@ f_q(y_k) / \hat{p}_k(y_k)$ is used, matching Algorithm~6.
 
 \subsection{evalC Explained}
 
-\texttt{evalC} (suffix \texttt{C}~=~constant/no-AD) computes the BSDF
-$f_r(\omega_o,\omega_i)$ at the current pixel's shading point \texttt{its}
-using the neighbor's winning direction \texttt{wod\_s}:
-\verb|bsdf_array->evalC(its, its.sh_frame.to_local(wod_s), ank)| 
-(\texttt{path\_restir.cpp:301}). This \emph{is} the point of ReSIR: the
-neighbor's sample (emitter position, direction) is reused, but the shading is
-re-evaluated at the current pixel $q$ --- not re-rendering the whole scene, just
-one shadow ray + BSDF evaluation per neighbor. The result \texttt{fq\_s} (line
-304) is the luminance of the re-evaluated contribution, used in the spatial
-reuse weight. The C++ suffix convention is from psdr-jit/Dr.Jit:
-\texttt{C}=no-AD (constant), \texttt{D}=AD-tracked (differentiable).
+The neighbor's sample (emitter position, outgoing direction \texttt{wod\_s})
+is reused at the current pixel's shading point \texttt{its}. The BSDF
+contribution \texttt{fq\_s} is recomputed at line~304 via
+\verb|bsdf_array->evalC(its, its.sh_frame.to_local(wod_s), ank)| --- this is a
+\emph{single} BSDF evaluation + shadow ray per neighbor, not a full re-render.
+The suffix \texttt{C} is Dr.Jit convention: \texttt{C}=constant/no-AD,
+\texttt{D}=AD-tracked.
 
 \section{Code Modularity}
 
@@ -209,10 +204,11 @@ accept/reject) adds cost without benefit. The Stanford-ORB benchmark
 strengths become relevant.
 
 \section{Stanford-ORB Benchmark}
+\label{sec:stanford}
 
 Full 7-scene evaluation (teapot, grogu, gnome, car, pitcher, blocks, cactus)
 comparing standard Neural-PBIR PBIR vs.\ ReSIR PBIR (fwd=16~spp,
-cand=8, bwd=1~spp, unbiased, 500~iters). Metrics are mean$\pm$std across
+cand=8, bwd=1~spp, biased weight, 500~iters). Metrics are mean$\pm$std across
 scenes. Standard PBIR baseline from \texttt{ASSETS/standard\_NPBIR\_reeval};
 ReSIR from \texttt{ASSETS/pipeline/restir\_NPBIR\_v1}.
 
@@ -270,6 +266,15 @@ effective SPP with spatial reuse), material/albedo within~0.6\,dB, LPIPS/SSIM
 differences negligible ($\le0.005$). Geometry and shape are identical --- they
 are driven by the NSR stage, not PBIR. The key trade-off is a~2$\times$ speedup
 in PBIR time (see \S\ref{sec:time}).
+
+\paragraph{Config discussion.} The Stanford-ORB runs used \texttt{cand=8}
+biased (the original default). The Cornell sweep found \texttt{cand=2}
+to be optimal, and \texttt{backward\_mode='path'} to be nearly identical
+to full ReSIR on diffuse content. However, these conclusions are
+scene-dependent: on specular-heavy Stanford-ORB scenes (glossy car paint,
+metallic teapot), spatial resampling provides meaningful gradient variance
+reduction. A future config sweep on Stanford-ORB could measure how
+specular-visible the 2-candidate optimum is vs.\ 8.
 
 \section{PBIR Stage Timing}
 \label{sec:time}
